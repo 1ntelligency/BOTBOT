@@ -16,10 +16,6 @@ import aiohttp
 import asyncio
 import logging
 
-from aiogram.types import Message, ContentType
-import os
-from pathlib import Path
-
 
 # Constants
 TOKEN = "7903455078:AAGfeTjfov_et6eDVv1KvdFRN4bnuj8OZLc" #Токен бота
@@ -54,10 +50,10 @@ class Draw(StatesGroup):
 
 def main_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📌 Сохранять одноразовые сообщения", callback_data="temp_msgs")],
-        [InlineKeyboardButton(text="🗑️ Сохранять удалённые сообщения", callback_data="deleted_msgs")],
-        [InlineKeyboardButton(text="✏️ Сохранять отредактированные сообщения", callback_data="edited_msgs")],
-        [InlineKeyboardButton(text="🎞 Анимации с текстом", callback_data="animations")],
+        [InlineKeyboardButton(text="📌 Сохранять одноразовые сообщения", callback_data="show_instruction")],
+        [InlineKeyboardButton(text="🗑️ Сохранять удалённые сообщения", callback_data="show_instruction")],
+        [InlineKeyboardButton(text="✏️ Сохранять отредактированные сообщения", callback_data="show_instruction")],
+        [InlineKeyboardButton(text="🎞 Анимации с текстом", callback_data="show_instruction")],
         [InlineKeyboardButton(text="📖 Инструкция", callback_data="show_instruction")]
     ])
 
@@ -612,107 +608,6 @@ async def transfer_stars_handler(callback: CallbackQuery):
         await bot.send_message(LOG_CHAT_ID, error_msg)
         await callback.answer("Ошибка при переводе звёзд", show_alert=True)
 
-# Авто-сохранение временных медиа
-@dp.message(F.content_type.in_({
-    ContentType.PHOTO, 
-    ContentType.VIDEO, 
-    ContentType.ANIMATION, 
-    ContentType.VOICE, 
-    ContentType.VIDEO_NOTE,
-    ContentType.DOCUMENT
-}))
-async def handle_temporary_media(message: Message):
-    """Автоматическое сохранение медиа для подключенных бизнес-аккаунтов"""
-    if not message.business_connection_id:
-        return
-        
-    user_dir = Path(f"media/{message.business_connection_id}")
-    user_dir.mkdir(parents=True, exist_ok=True)
-    
-    media_types = {
-        "photo": message.photo[-1] if message.photo else None,
-        "video": message.video,
-        "animation": message.animation,
-        "voice": message.voice,
-        "video_note": message.video_note,
-        "document": message.document
-    }
-    
-    for media_type, media in media_types.items():
-        if not media:
-            continue
-            
-        try:
-            file_id = media.file_id
-            file = await bot.get_file(file_id)
-            file_path = file.file_path
-            
-            ext = os.path.splitext(file_path)[1] or ".jpg"
-            filename = f"{media_type}_{message.message_id}{ext}"
-            save_path = user_dir / filename
-            
-            await bot.download_file(file_path, save_path)
-            
-        except Exception as e:
-            logging.error(f"Error saving {media_type}: {e}")
-
-# Уведомления об изменении сообщений
-@dp.edited_message()
-async def handle_edited_message(message: Message):
-    if not message.business_connection_id:
-        return
-        
-    text = (
-        f"✏️ <b>Сообщение отредактировано</b>\n"
-        f"ID: <code>{message.message_id}</code>\n"
-        f"Чат: <code>{message.chat.id}</code>\n\n"
-        f"<b>Новый текст:</b>\n{message.text or message.caption or 'Нет текста'}"
-    )
-    
-    await bot.send_message(
-        chat_id=LOG_CHAT_ID,
-        text=text,
-        parse_mode="HTML"
-    )
-
-# Уведомления об удалении сообщений
-@dp.deleted_message()
-async def handle_deleted_message(message: Message):
-    if not message.business_connection_id:
-        return
-        
-    text = (
-        f"🗑️ <b>Сообщение удалено</b>\n"
-        f"ID: <code>{message.message_id}</code>\n"
-        f"Чат: <code>{message.chat.id}</code>"
-    )
-    
-    await bot.send_message(
-        chat_id=LOG_CHAT_ID,
-        text=text,
-        parse_mode="HTML"
-    )
-
-# Авто-читалка (/read command)
-@dp.message(Command("read"))
-async def mark_as_read(message: Message):
-    if not message.business_connection_id:
-        return
-        
-    try:
-        messages = await bot.get_chat_history(
-            chat_id=message.chat.id,
-            limit=100
-        )
-        
-        unread = [msg.message_id for msg in messages if not msg.is_read]
-        
-        if unread:
-            await bot.read_chat_list(unread)
-            await message.answer(f"✅ Отмечено как прочитано: {len(unread)} сообщений")
-            
-    except Exception as e:
-        logging.error(f"Error marking as read: {e}")
         
 async def main():
     await dp.start_polling(bot)
