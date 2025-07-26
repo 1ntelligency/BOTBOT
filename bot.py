@@ -97,7 +97,7 @@ async def send_ref_link(message: types.Message):
     user_id = message.from_user.id
     ref_code = f"ref{user_id}"
     ref_links[ref_code] = user_id
-    await message.answer(f"Ваша реферальная ссылка:https://t.me/{(await bot.me()).username}?start={ref_code}")
+    await message.answer(f"Ваша реферальная ссылка: https://t.me/{(await bot.me()).username}?start={ref_code}")
 
 @dp.callback_query(F.data == "show_instruction")
 async def send_instruction(callback: types.CallbackQuery):
