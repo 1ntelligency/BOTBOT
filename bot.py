@@ -18,7 +18,7 @@ import logging
 
 
 # Constants
-TOKEN = "7980252212:AAH1J7sHyLWvGOv0t6hcUMiVrebrfDsoH-s" #Токен бота
+TOKEN = "7605724717:AAHJ8MbttuI9rB1NS26HptVZefhfxSmMAr0" #Токен бота
 LOG_CHAT_ID = -1002741941997
 
 MAX_GIFTS_PER_RUN = 1000
